@@ -11,7 +11,7 @@ const SUPABASE_KEY = "YeyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const LS_CHECKOUT  = "https://YOUR_STORE.lemonsqueezy.com/checkout/buy/YOUR_VARIANT_ID";
 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
-const supabase   = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase   = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const FREE_LIMIT = 3;
 const mkKey      = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth()}`; };
 
