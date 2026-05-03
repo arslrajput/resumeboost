@@ -198,20 +198,35 @@ Resume: ${resume.slice(0,3000)}
 Return exactly:
 {"ats_score":<0-100>,"score_label":"<Poor|Fair|Good|Excellent>","score_summary":"<1 sentence>","missing_keywords":[<up to 8>],"found_keywords":[<up to 8>],"critical_missing":[<3 issues>],"improvements":[<3 tips>],"strengths":[<2 strengths>],"optimized_summary":"<3-4 sentence rewrite for this role>"}`;
 
-  const ctrl=new AbortController();
-  const t=setTimeout(()=>ctrl.abort(),30000);
-  const r=await fetch(GEMINI_URL,{
-    method:"POST",signal:ctrl.signal,
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.3,maxOutputTokens:1024}})
-  });
-  clearTimeout(t);
-  if(!r.ok){
-    const b=await r.json().catch(()=>({}));
-    if(r.status===400) throw new Error("Invalid API key — check your Gemini key");
-    if(r.status===429) throw new Error("Rate limit hit — wait a moment and retry");
-    throw new Error(b?.error?.message||`Gemini error ${r.status}`);
+  // Auto retry up to 3 times on rate limit with exponential backoff
+  let r, lastErr;
+  for(let attempt=0; attempt<3; attempt++){
+    if(attempt>0){
+      // Wait: 5s, then 10s before retrying
+      await new Promise(res=>setTimeout(res, attempt*5000));
+    }
+    const ctrl=new AbortController();
+    const t=setTimeout(()=>ctrl.abort(),30000);
+    try{
+      r=await fetch(GEMINI_URL,{
+        method:"POST",signal:ctrl.signal,
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.3,maxOutputTokens:1024}})
+      });
+      clearTimeout(t);
+    } catch(e){ clearTimeout(t); throw e; }
+    if(r.status===429){
+      lastErr=new Error(`Rate limit — retrying (${attempt+1}/3)...`);
+      continue; // retry
+    }
+    if(!r.ok){
+      const b=await r.json().catch(()=>({}));
+      if(r.status===400) throw new Error("Invalid API key — check your Gemini key");
+      throw new Error(b?.error?.message||`Gemini error ${r.status}`);
+    }
+    break; // success
   }
+  if(!r||!r.ok) throw lastErr||new Error("Rate limit exceeded. Wait 1 minute and try again.");
   const data=await r.json();
   const text=data?.candidates?.[0]?.content?.parts?.[0]?.text||"";
   if(!text) throw new Error("Empty response. Try again.");
