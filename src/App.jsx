@@ -10,7 +10,7 @@ const SUPABASE_URL = "https://osicfepiihctdbjpqqos.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9zaWNmZXBpaWhjdGRianBxcW9zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczMDkwMzUsImV4cCI6MjA5Mjg4NTAzNX0.ARdQYItDYqmn1a22Jz26GcsE9AdS_0fUPNfmhb66rCs";
 const LS_CHECKOUT  = "https://YOUR_STORE.lemonsqueezy.com/checkout/buy/YOUR_VARIANT_ID";
 
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
 const supabase   = createClient(SUPABASE_URL, SUPABASE_KEY);
 const FREE_LIMIT = 3;
 const mkKey      = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth()}`; };
@@ -222,6 +222,155 @@ Return exactly:
   if(typeof p.ats_score!=="number") throw new Error("Invalid response.");
   p.ats_score=Math.min(100,Math.max(0,Math.round(p.ats_score)));
   return p;
+}
+
+// ─── PDF TEXT EXTRACTOR ───────────────────────────────────────────────────────
+async function extractTextFromPDF(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target.result;
+        // Basic PDF text extraction — reads raw text content from PDF binary
+        // Works for most text-based PDFs
+        const matches = text.match(/BT[\s\S]*?ET/g) || [];
+        let extracted = "";
+        for (const block of matches) {
+          const tj = block.match(/\(([^)]+)\)\s*Tj/g) || [];
+          const tjarr = block.match(/\[([^\]]+)\]\s*TJ/g) || [];
+          for (const t of tj) { extracted += t.replace(/\(([^)]+)\)\s*Tj/, "$1") + " "; }
+          for (const t of tjarr) { extracted += t.replace(/\[([^\]]+)\]\s*TJ/, "$1").replace(/[()]/g, "") + " "; }
+        }
+        // Fallback: just grab printable ASCII strings from the PDF
+        if (extracted.trim().length < 100) {
+          const strings = text.match(/[a-zA-Z0-9 ,.\-@()&:\/\n]{4,}/g) || [];
+          extracted = strings.join(" ");
+        }
+        extracted = extracted.replace(/\s+/g, " ").trim();
+        if (extracted.length < 50) reject(new Error("Could not read PDF text. Please paste your resume manually."));
+        else resolve(extracted.slice(0, 6000));
+      } catch(err) { reject(new Error("PDF read failed. Please paste your resume manually.")); }
+    };
+    reader.onerror = () => reject(new Error("File read failed."));
+    reader.readAsBinaryString(file);
+  });
+}
+
+// ─── RESUME INPUT COMPONENT ───────────────────────────────────────────────────
+function ResumeInput({ rv, setRv, fErrs, setFErrs, busy, toast }) {
+  const [mode, setMode] = useState("upload"); // "upload" | "paste"
+  const [uploading, setUploading] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const fileRef = useRef(null);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Validate file type
+    if (!file.type.includes("pdf") && !file.name.endsWith(".pdf")) {
+      toast("Only PDF files supported. For Word docs, copy-paste text.", "error");
+      return;
+    }
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast("File too large. Max 5MB.", "error");
+      return;
+    }
+    setUploading(true);
+    setFileName(file.name);
+    try {
+      const text = await extractTextFromPDF(file);
+      setRv(text);
+      if (fErrs.rv) setFErrs(p => ({ ...p, rv: "" }));
+      toast(`Resume extracted! ${text.length} characters read ✓`, "success");
+    } catch (err) {
+      toast(err.message, "error");
+      setFileName("");
+      setMode("paste");
+    }
+    setUploading(false);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) { const dt = new DataTransfer(); dt.items.add(file); fileRef.current.files = dt.files; handleFile({ target: { files: [file] } }); }
+  }
+
+  return (
+    <div>
+      {/* Mode Toggle */}
+      <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+        <button onClick={() => setMode("upload")} disabled={busy}
+          style={{ fontSize:12, padding:"5px 12px", borderRadius:7, border:"1px solid", cursor:"pointer", fontFamily:"var(--fb)", transition:"all .2s",
+            background: mode==="upload" ? "rgba(242,100,25,.12)" : "transparent",
+            borderColor: mode==="upload" ? "rgba(242,100,25,.35)" : "rgba(255,255,255,.1)",
+            color: mode==="upload" ? "var(--a)" : "var(--mu)" }}>
+          📎 Upload PDF
+        </button>
+        <button onClick={() => setMode("paste")} disabled={busy}
+          style={{ fontSize:12, padding:"5px 12px", borderRadius:7, border:"1px solid", cursor:"pointer", fontFamily:"var(--fb)", transition:"all .2s",
+            background: mode==="paste" ? "rgba(242,100,25,.12)" : "transparent",
+            borderColor: mode==="paste" ? "rgba(242,100,25,.35)" : "rgba(255,255,255,.1)",
+            color: mode==="paste" ? "var(--a)" : "var(--mu)" }}>
+          ✏️ Paste Text
+        </button>
+      </div>
+
+      {/* Upload Mode */}
+      {mode === "upload" && (
+        <div>
+          <div
+            onDrop={handleDrop} onDragOver={e => e.preventDefault()}
+            onClick={() => !busy && fileRef.current?.click()}
+            style={{
+              border: `2px dashed ${fErrs.rv ? "rgba(255,85,85,.4)" : fileName ? "rgba(78,205,196,.35)" : "rgba(255,255,255,.1)"}`,
+              borderRadius: 11, padding: "28px 20px", textAlign: "center",
+              cursor: busy ? "not-allowed" : "pointer", transition: "all .2s",
+              background: fileName ? "rgba(78,205,196,.04)" : "rgba(255,255,255,.02)",
+            }}
+            onMouseEnter={e => { if(!busy) e.currentTarget.style.borderColor = "rgba(242,100,25,.35)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = fileName ? "rgba(78,205,196,.35)" : fErrs.rv ? "rgba(255,85,85,.4)" : "rgba(255,255,255,.1)"; }}>
+            <input ref={fileRef} type="file" accept=".pdf" onChange={handleFile} style={{ display:"none" }} disabled={busy}/>
+            {uploading ? (
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10, color:"var(--mu)", fontSize:14 }}>
+                <div className="lsp" style={{ width:20, height:20 }}/> Extracting text...
+              </div>
+            ) : fileName ? (
+              <div>
+                <div style={{ fontSize:22, marginBottom:6 }}>✅</div>
+                <div style={{ fontSize:13, color:"var(--a2)", fontWeight:500, marginBottom:4 }}>{fileName}</div>
+                <div style={{ fontSize:11, color:"var(--mu)" }}>{rv.length} characters extracted · Click to change</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize:28, marginBottom:8 }}>📄</div>
+                <div style={{ fontSize:14, color:"var(--tx)", marginBottom:4 }}>Drop your PDF here or click to browse</div>
+                <div style={{ fontSize:11, color:"var(--mu)" }}>PDF only · Max 5MB</div>
+              </div>
+            )}
+          </div>
+          {fErrs.rv && <div className="ier">⚠ {fErrs.rv}</div>}
+          <div style={{ fontSize:11, color:"var(--mu)", marginTop:5 }}>
+            💡 Word doc? Save as PDF first, or use "Paste Text" option above.
+          </div>
+        </div>
+      )}
+
+      {/* Paste Mode */}
+      {mode === "paste" && (
+        <div>
+          <textarea rows={8} className={fErrs.rv ? "ie" : ""}
+            placeholder="Paste your full resume text here (copy from Word, PDF, or LinkedIn)..."
+            value={rv}
+            onChange={e => { setRv(e.target.value); if (fErrs.rv) setFErrs(p => ({ ...p, rv: "" })); }}
+            disabled={busy} style={{ marginBottom:3 }}/>
+          <div className={`fhn ${rv.length > 2800 ? "wn" : ""}`}>{rv.length}/3000</div>
+          {fErrs.rv && <div className="ier">⚠ {fErrs.rv}</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Ring({score}){
@@ -654,12 +803,7 @@ export default function App(){
                   <div className={`fhn ${jd.length>2800?"wn":""}`}>{jd.length}/3000</div>
                   {fErrs.jd&&<div className="ier">⚠ {fErrs.jd}</div>}
                   <label className="flb" style={{marginTop:15}}>Your Resume *</label>
-                  <textarea rows={8} className={fErrs.rv?"ie":""}
-                    placeholder="Paste your full resume text (from Word, PDF, or type)..."
-                    value={rv} onChange={e=>{setRv(e.target.value);if(fErrs.rv)setFErrs(p=>({...p,rv:""}));}}
-                    disabled={busy} style={{marginBottom:3}}/>
-                  <div className={`fhn ${rv.length>2800?"wn":""}`}>{rv.length}/3000</div>
-                  {fErrs.rv&&<div className="ier">⚠ {fErrs.rv}</div>}
+                  <ResumeInput rv={rv} setRv={setRv} fErrs={fErrs} setFErrs={setFErrs} busy={busy} toast={toast}/>
                   {apiErr&&(
                     <div className="ebx">
                       <p>⚠ {apiErr}</p>
